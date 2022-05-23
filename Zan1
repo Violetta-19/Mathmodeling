@@ -1,0 +1,88 @@
+#Цурцумия Виолетта Бадриевна — для региона 34 рассчитайте урожайность пшеницы в 2009 году, 
+#взяв для рассчета средние суммы активных температур за текущий год, 
+#с 3 ближайших метеостанций но рассчитав колонку di самостоятельно, 
+#как долю месяца, когда среднедневные температуры были выше 7 градусов, 
+#но учитывая, что посев не может начаться раньше середины апреля, а вегетация составляет 4 месяца
+
+rm(list=ls())
+library(rnoaa)
+library(dplyr)
+library(ggplot2) 
+library(tidyverse)
+library(lubridate)
+
+station_data = read.csv("station_data.csv")
+#После получения всписка всех станций, извлекаем список станций ближайших к городу Волгоград,
+#создав таблицу с именем региона и координатами его столицы
+volgograd = data.frame(id = "VOLGOGRAD", latitude = 48.7194,  longitude = 44.5018)
+v_around = meteo_nearby_stations(lat_lon_df = volgograd, station_data = station_data,
+                                    limit = 3, var = c("PRCP", "TAVG"),
+                                    year_min = 2009, year_max = 2009)
+#v_around это список единственным элементом которого является таблица, содержащая идентификаторы 
+#метеостанций отсортированных по их удалленности от Волгограда
+#Получаем данные со всех станций
+v_id = v_around[["VOLGOGRAD"]][["id"]][1]
+str(v_around)
+all_V_data = meteo_tidy_ghcnd(stationid = v_id)
+#Чтобы получить таблицу всех метеостанций вокруг Волгограда нужно выбрать целиком первый объект из списка
+v_table = v_around[[1]]
+summary(v_table)
+#Нужно создать цикл, в котором бы скачивались  нужные данные для всех метеостанций из созданного списка
+#Создадим промежуточный объект, куда будем скачивать данные с конкретной метеостанции
+all_i = data.frame()
+#Создадим объект, куда скачаем все данные всех метеостанций
+all_v = data.frame()
+#Цикл для всех метеостанций
+for(i in 1:3) 
+{all_i  = meteo_tidy_ghcnd(stationid =  v_around[["VOLGOGRAD"]][["id"]][i])
+ all_i = all_i[ ,c("id","date","tavg")] 
+ print(all_i)
+ all_v=rbind(all_v, all_i)}
+#Рассчитаем коэффициент di, как долю месяца,
+#когда среднедневные температуры были выше 7 градусов, но учитывая,
+#что посев не может начаться раньше середины апреля, а вегетация составляет 4 месяца
+tdi = all_v %>% mutate(date=ymd(date),
+                   year=year(date),
+                   month=month(date)) %>%
+  group_by(year,month) %>%
+  mutate(dm = n(),
+         gd = case_when(
+           tavg >= 70 ~ T,
+           tavg <70 ~ F
+           )) %>%  summarise(di = sum(gd)/mean(dm))
+
+tdi = tdi %>% filter(year==2009) %>% ungroup() %>% group_by(month) %>%
+  summarise(di = mean(di))
+tdi$di[0:3]=0
+tdi = tdi %>% mutate(tdis = cumsum(di))
+tdi = tdi %>% mutate(di = case_when(tdis > 4 ~ di - (tdis-4),TRUE ~ di))
+tdi = tdi %>% mutate(di = case_when(di < 0 ~ 0,TRUE ~ di))
+#Рассчитаем среднюю сумму активных температур для двух метеостанций, для Волгоградской области в течении 2009
+data_v = all_v %>% 
+  mutate(date=ymd(date),
+         year=year(date),
+         month=month(date)) %>%
+  mutate(tavg=case_when( tavg<50 ~ 0, TRUE ~ tavg)/10) %>% 
+  filter (year==2009) %>% 
+  group_by(id,year,month) %>% 
+  summarize(tsum = sum(tavg)) %>% 
+  group_by(month) %>% summarize(St = mean(tsum))
+#Создадим и считаем фал CSV с коэффициентами и внесем остальные
+#коэффициенты для расчета урожайности пшеницы 
+coef=read.csv("coef.csv", header = TRUE,
+              sep = ";", dec = ",")
+
+y=1.0
+Kf=300
+Qj=1600
+Lj=2.2
+Ej=25
+#Рассчитаем урожайность по месяцам
+data_v= data_v %>% 
+  mutate(Fi=(as.numeric(coef$afi))+(as.numeric(coef$bfi))*y*(data_v$St))
+data_v= data_v %>% 
+  mutate(Yj=(((data_v$Fi)*(tdi$di)*Kf)/(Qj*Lj*(100-Ej))))
+#Расчитываем суммарную урожайность как сумму по месяцам
+YIELD=sum(data_v$Yj);
+YIELD
+# Ответ: 23.4 ц/га
